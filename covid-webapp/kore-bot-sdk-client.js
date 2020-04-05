@@ -46,8 +46,6 @@ var _chatHistoryLoaded = false;
 inherits(KoreBot, EventEmitter);
 
 KoreBot.prototype.emit = function emit() {
-	console.log("_chatHistoryLoaded",_chatHistoryLoaded);
-	console.log("arguments",arguments);
 	if(!_chatHistoryLoaded && arguments && arguments[0] === 'history') {
 		_chatHistoryLoaded = true;
 		this.cbBotChatHistory(arguments);
@@ -68,48 +66,52 @@ KoreBot.prototype.fetchUserLocation = function() {
 	if(userLocation.country !== "") {
 		return;
 	}
-	console.log("Fetching user location");
+  console.log("Fetching user location");
+  var options=this.options;
 	var successCallback =  function(position){
-		var latitude = position.coords.latitude;
-		var longitude =  position.coords.longitude;
-		userLocation.latitude = latitude;
-		userLocation.longitude = longitude;
-		var request = new XMLHttpRequest();
+    if(options.googleMapsAPIKey !== ""){
+      var latitude = position.coords.latitude;
+      var longitude =  position.coords.longitude;
+      userLocation.latitude = latitude;
+      userLocation.longitude = longitude;
+      var request = new XMLHttpRequest();
+      var method = 'GET';
+      var url = 'https://maps.googleapis.com/maps/api/geocode/json?latlng='+latitude+','+longitude+'&sensor=true&key='+options.googleMapsAPIKey+'';
+      var async = true;
 
-	   var method = 'GET';
-	   var url = 'http://maps.googleapis.com/maps/api/geocode/json?latlng='+latitude+','+longitude+'&sensor=true';
-	   var async = true;
-
-	   request.open(method, url, async);
-	   request.onreadystatechange = function(){
-		    if(request.readyState == 4 && request.status == 200){
-				var data = JSON.parse(request.responseText);
-				if(typeof(Storage) !== "undefined") {
-					if(data.results.length == 0) {
-						data = JSON.parse(localStorage.getItem("locationData"));
-					}
-					else{
-						localStorage.setItem("locationData", JSON.stringify(data));
-					}
-				}
-				var addressComponents = data.results[0].address_components;
-				for(i=0;i<addressComponents.length;i++){
-					var types = addressComponents[i].types;
-					if(types=="locality,political"){
-						userLocation.city = addressComponents[i].long_name;
-					}
-					else if(types=="country,political"){
-						userLocation.country = addressComponents[i].long_name;
-					}
-					else if(types=="street_number"){
-						userLocation.street = addressComponents[i].long_name;
-					}
-				}
-		   }
-		};
-		request.send();
-	};
-	navigator.geolocation.getCurrentPosition(successCallback);
+      request.open(method, url, async);
+      request.onreadystatechange = function(){
+        if(request.readyState == 4 && request.status == 200){
+          var data = JSON.parse(request.responseText);
+          if(typeof(Storage) !== "undefined") {
+            if(data.results.length == 0) {
+              data = JSON.parse(localStorage.getItem("locationData"));
+            }
+            else{
+              localStorage.setItem("locationData", JSON.stringify(data));
+            }
+          }
+          var addressComponents = data.results[0].address_components;
+          for(i=0;i<addressComponents.length;i++){
+            var types = addressComponents[i].types;
+            if(types=="locality,political"){
+              userLocation.city = addressComponents[i].long_name;
+            }
+            else if(types=="country,political"){
+              userLocation.country = addressComponents[i].long_name;
+            }
+            else if(types=="political,sublocality,sublocality_level_2"){
+              userLocation.street = addressComponents[i].long_name;
+            }
+          }
+        }
+      };
+      request.send();
+    }else{
+      console.warn("please provide google maps API key");
+    }
+  };
+  navigator.geolocation.getCurrentPosition(successCallback);
 };
 /*
 sends a message to bot.
@@ -136,25 +138,6 @@ KoreBot.prototype.sendMessage = function(message,optCb) {
 	
 };
 
-//Send client side events to bot kit
-
-KoreBot.prototype.sendClientEvent = function(message,optCb) {
-	debug("sending message to bot");
-	if(this.initialized){
-		message["resourceid"] = '/bot.clientEvent';
-		message["botInfo"] = this.options.botInfo || {};
-		message["client"] = this.options.client || "sdk";
-		message["meta"] = {
-			"timezone":jstz.jstz.determine().name(),
-			"locale":window.navigator.userLanguage || window.navigator.language
-		};
-		if(userLocation.latitude !== 0 && userLocation.longitude !== 0) { //passing location for each message
-			message["meta"].location = userLocation;
-		}
-		this.RtmClient.sendClientEvent(message,optCb);
-	}	
-};
-
 /*
 emits a message event on message from the server.
 */
@@ -179,6 +162,16 @@ KoreBot.prototype.close = function() {
 	}
 };
 
+/*
+destory for bot sdk object
+*/
+KoreBot.prototype.destroy = function () {
+  if (this.RtmClient) {
+    this.RtmClient._close();
+  }
+  _chatHistoryLoaded = false;
+  this.removeAllListeners();
+};
 /*
 on forward history.
 */
@@ -326,14 +319,6 @@ KoreBot.prototype.onOpenWSConnection = function(msg) {
   if(this.options.loadHistory && !_chatHistoryLoaded){
     this.getHistory({});
   }
-/*var message = {
-"message": {
-		"body": "Welcome"
-	},
-	"resourceid": "/bot.message"
-}
-window.currKotrebotInstance = this;
-window.currKotrebotInstance.sendMessage(message)*/
 	this.emit(RTM_CLIENT_EVENTS.RTM_CONNECTION_OPENED, {});
 };
 
@@ -358,6 +343,7 @@ KoreBot.prototype.onLogIn = function(err, data) {
 		this.userInfo = data;
 		this.cbBotDetails(data,this.options.botInfo);
 		this.RtmClient = new clients.KoreRtmClient({}, this.options);
+		this.emit("rtm_client_initialized");
 		this.RtmClient.start({
 			"botInfo": this.options.botInfo
 		});
@@ -366,9 +352,6 @@ KoreBot.prototype.onLogIn = function(err, data) {
 	}
 };
 
-KoreBot.prototype.getJwtGrantData = function() {
-	return this.userInfo;
-}
 /*
 validates the JWT claims and issue's access token for valid user.
 */
@@ -385,9 +368,6 @@ KoreBot.prototype.logIn = function(err, data) {
 		this.cbErrorToClient = data.handleError || noop;
 		this.cbBotDetails = data.botDetails || noop;
 		this.cbBotChatHistory = data.chatHistory || noop;
-		if(data.restorePS){
-			this.onLogIn(null, data.jwtGrant);
-		} else
 		this.WebClient.login.login({"assertion":data.assertion,"botInfo":this.options.botInfo}, bind(this.onLogIn, this));
 	}
 
@@ -409,17 +389,13 @@ KoreBot.prototype.init = function(options,messageHistoryLimit) {
 	if (!options.test) {
 		debug("test is false");
 		if (isFunction(options.assertionFn)) {
-			if(options.restorePS){
-			  this.logIn(null, options);
-			}
-		    else
 			options.assertionFn(options, bind(this.logIn, this));
 		} else {
 			debug("assertion is not a function");
 			console.error("assertion is not a function");
 		}
-		} 
-		else {
+
+	} else {
 		debug("test is true");
 		if (isFunction(options.koreAnonymousFn)) {
 			options.koreAnonymousFn.call(this, options);
@@ -818,6 +794,7 @@ function BaseAPIClient(token, opts) {
   EventEmitter.call(this);
   this._token = token;
   this.koreAPIUrl = opts.koreAPIUrl || 'https://app.kore.com/api/';
+  this.reWriteSocketURL=opts.reWriteSocketURL;
   this.transport = opts.transport || requestsTransport;
   this.userAgent ;
   this._requestQueue = async.priorityQueue(
@@ -876,12 +853,13 @@ BaseAPIClient.prototype._callTransport = function _callTransport(task, queueCb) 
       } else {
 
         httpErr = new Error('Unable to process request, received bad ' + statusCode + ' error');
-        if (!retryOp.retry(httpErr)) {
-          cb(httpErr, body);
-        } else {
-		  cb(httpErr, body);
-          return;
-        }
+        //   if (!retryOp.retry(httpErr)) {
+        //     cb(httpErr, body);
+        //   } else {
+        // cb(httpErr, body);
+        //     return;
+        //   }
+        cb(httpErr, body);
       }
     } else {        
         cb(null, body);
@@ -1105,7 +1083,8 @@ var RTM_CLIENT_INTERNAL_EVENT_TYPES = [
 var UNRECOVERABLE_RTM_START_ERRS = [
   'not_authed',
   'invalid_auth',
-  'account_inactive'
+  'account_inactive',
+  'token_expired'
 ];
 var CLIENT_EVENTS = require('../events/client').RTM;
 var BaseAPIClient = require('../client');
@@ -1134,11 +1113,13 @@ function KoreRTMClient(token, opts) {
   this._connAttempts = 0;
   this._connecting = false;
   this._reconnecting = false;
+  if (clientOpts.hasOwnProperty("_reconnecting") && clientOpts._reconnecting) {
+    this._reconnecting = clientOpts._reconnecting;
+    clientOpts._reconnecting=false;
+  }
   this.user = {};
   this.user.accessToken = clientOpts.accessToken;
   this.botInfo = clientOpts.botInfo || {};
-  if(clientOpts.restorePS) this._reconnecting = true;
-
 }
 
 inherits(KoreRTMClient, BaseAPIClient);
@@ -1182,7 +1163,8 @@ KoreRTMClient.prototype._onStart = function _onStart(err, data) {
     console.log(e && e.stack);
   }
   if(data && data.errors && (data.errors[0].code === 'TOKEN_EXPIRED' || data.errors[0].code === 401 || data.errors[0].msg === 'token expired')){
-      $('.reload-btn').click();
+      $(".reload-btn").trigger('click',{isReconnect:true});
+      data.error='token_expired';
   }
   if (err || !data.url) {
     debug("error or no url in response %s", err || "no url");
@@ -1226,10 +1208,32 @@ KoreRTMClient.prototype._safeDisconnect = function _safeDisconnect() {
   this.connected = false;
 };
 
+KoreRTMClient.prototype.reWriteURL = function connect(socketUrl) {
+  if (this.reWriteSocketURL) {
+      var parser = document.createElement('a');
+      parser.href = socketUrl;
+      if (this.reWriteSocketURL.protocol) {
+          parser.protocol = this.reWriteSocketURL.protocol;
+
+      }
+      if (this.reWriteSocketURL.hostname) {
+          parser.hostname = this.reWriteSocketURL.hostname;
+
+      }
+      if (this.reWriteSocketURL.port) {
+          parser.port = this.reWriteSocketURL.port;
+
+      }
+      socketUrl=parser.href;
+  }
+  return socketUrl;
+};
+
 
 KoreRTMClient.prototype.connect = function connect(socketUrl) {
   debug("connecting");
   this.emit(CLIENT_EVENTS.WS_OPENING,{});
+  socketUrl=this.reWriteURL(socketUrl);
   this.ws = this._socketFn(socketUrl);
   this.ws.onopen = bind(this.handleWsOpen, this);
   this.ws.onmessage = bind(this.handleWsMessage, this);
@@ -1350,11 +1354,6 @@ KoreRTMClient.prototype._handleHello = function _handleHello() {
 };
 
 KoreRTMClient.prototype.sendMessage = function sendMessage(message, optCb) {
-  this.send(message, optCb);
-};
-
-//Send client side events to Bots
-KoreRTMClient.prototype.sendClientEvent = function sendClientEvent(message, optCb) {
   this.send(message, optCb);
 };
 
@@ -2954,7 +2953,7 @@ module.exports = WebAPIClient;
 (function (root, factory) {
     if (typeof define === 'function' && define.amd) {
         // AMD. Register as an anonymous module.
-        define([], factory);
+        //define([], factory);
         module.exports = factory();
     } else if (typeof exports === 'object') {
         // Node. Does not work with strict CommonJS, but
@@ -16161,9 +16160,9 @@ if (typeof Object.create === 'function') {
 
     // Define as an anonymous module so, through path mapping, it can be
     // referenced as the "underscore" module.
-    define(function() {
-      return _;
-    });
+    // define(function() {
+    //   return _;
+    // });
   }
   // Check for `exports` after `define` in case a build optimizer adds an `exports` object.
   else if (freeExports && freeModule) {
